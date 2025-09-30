@@ -350,7 +350,7 @@ main() {
             import_admin_level "$year" "Municipalities" "bgysubmuns-municity-*.json" "municipalities"
         else
             # 2011 and 2019 use consistent patterns, but regions.json is inside medres/
-            import_admin_level "$year" "Regions" "regions.json" "regions"
+            import_admin_level "$year" "Regions" "regions-*.json" "regions"
             import_admin_level "$year" "Provinces" "provinces-region-*.json" "provinces"
             import_admin_level "$year" "Municipalities" "municities-province-*.json" "municipalities"
             import_admin_level "$year" "Barangays" "barangays-municity-*.json" "barangays"
