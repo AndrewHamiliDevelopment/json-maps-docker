@@ -1,0 +1,16 @@
+services:
+
+  postgis:
+    tty: true
+    build: .
+    ports:
+      - "5432:6543"
+    restart: always
+    environment:
+      POSTGRES_DB: gis
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - ./postgis-data:/var/lib/postgresql/data
+      - ./maps:/opt/maps
+      - ./import.sh:/opt/import.sh
