@@ -60,59 +60,69 @@ create_partition() {
 CREATE TABLE IF NOT EXISTS barangays_${CLEAN_NAME} 
 PARTITION OF barangays_partitioned 
 FOR VALUES IN ('${BARANGAY_NAME}');
-
 EOF
 }
 
-# Import with automatic partition creation
-import_with_partitioning() {
+# Extract unique barangay names from a JSON file
+get_barangay_names() {
+    local FILE="$1"
+    if command -v jq &> /dev/null; then
+        jq -r '.features[].properties.NAME_3' "$FILE" 2>/dev/null | sort | uniq | grep -v "^null$" | grep -v "^$"
+    else
+        echo "Warning: jq not found. Will create partitions after import."
+        return 1
+    fi
+}
+
+# Simplified import with direct partitioning
+import_with_direct_partitioning() {
     # First create the parent table
     create_partitioned_table
-    
-    # Temporary table for initial import
-    local TEMP_TABLE="temp_barangay_import"
     
     for YEAR in 2011 2019 2023; do
         echo "Processing barangays for year $YEAR..."
         
-        find "maps/$YEAR/geojson/barangays" -name "*.json" | while read FILE; do
+        find "maps/$YEAR/geojson/barangays" -name "*.json" | head -2 | while read FILE; do  # Limit to 2 files for testing
             if [ -f "$FILE" ]; then
-                echo "Importing $FILE into temporary table"
+                echo "Processing file: $FILE"
                 
-                # Import to temporary table first
-                ogr2ogr \
-                    -f "PostgreSQL" \
-                    PG:"host=$PG_HOST port=$PG_PORT dbname=$PG_DB user=$PG_USER password=$PG_PASS" \
-                    "$FILE" \
-                    -nln "$TEMP_TABLE" \
-                    -overwrite \
-                    -lco GEOMETRY_NAME=geom \
-                    -lco FID=gid \
-                    -nlt PROMOTE_TO_MULTI \
-                    -skipfailures \
-                    -progress
-                
-                # Add the year column after import
-                echo "Adding year information for $YEAR..."
-                psql -h "$PG_HOST" -p "$PG_PORT" -d "$PG_DB" -U "$PG_USER" << EOYEAR
--- Add data_year column and populate it
-ALTER TABLE $TEMP_TABLE ADD COLUMN IF NOT EXISTS data_year VARCHAR(4);
-UPDATE $TEMP_TABLE SET data_year = '$YEAR';
-EOYEAR
-                
-                # Get unique barangay names and create partitions
-                psql -h "$PG_HOST" -p "$PG_PORT" -d "$PG_DB" -U "$PG_USER" -t -c "SELECT DISTINCT name_3 FROM $TEMP_TABLE WHERE name_3 IS NOT NULL;" | while read BARANGAY_NAME; do
+                # First, extract barangay names and create partitions
+                echo "Creating partitions for barangays in this file..."
+                get_barangay_names "$FILE" | while read BARANGAY_NAME; do
                     if [ -n "$BARANGAY_NAME" ]; then
-                        # Remove leading/trailing whitespace
-                        BARANGAY_NAME=$(echo "$BARANGAY_NAME" | xargs)
                         create_partition "$BARANGAY_NAME"
                     fi
                 done
                 
-                # Move data from temp table to partitioned table
-                echo "Moving data to partitioned table..."
-                psql -h "$PG_HOST" -p "$PG_PORT" -d "$PG_DB" -U "$PG_USER" << EOMOVE
--- Insert data into partitioned table, handling any column mismatches
+                # Import each barangay separately
+                get_barangay_names "$FILE" | while read BARANGAY_NAME; do
+                    if [ -n "$BARANGAY_NAME" ]; then
+                        echo "Importing barangay: $BARANGAY_NAME"
+                        
+                        # Create a unique table name for this barangay import
+                        CLEAN_NAME=$(echo "$BARANGAY_NAME" | sed 's/ /_/g' | sed 's/[^a-zA-Z0-9_]//g' | tr '[:upper:]' '[:lower:]')
+                        STAGING_TABLE="staging_${CLEAN_NAME}_${YEAR}"
+                        
+                        # Import to staging table with filter
+                        ogr2ogr \
+                            -f "PostgreSQL" \
+                            PG:"host=$PG_HOST port=$PG_PORT dbname=$PG_DB user=$PG_USER password=$PG_PASS" \
+                            "$FILE" \
+                            -nln "$STAGING_TABLE" \
+                            -overwrite \
+                            -lco GEOMETRY_NAME=geom \
+                            -lco FID=gid \
+                            -nlt PROMOTE_TO_MULTI \
+                            -where "NAME_3 = '$BARANGAY_NAME'" \
+                            -skipfailures
+                        
+                        if [ $? -eq 0 ]; then
+                            # Move data to partitioned table
+                            psql -h "$PG_HOST" -p "$PG_PORT" -d "$PG_DB" -U "$PG_USER" << EOSTAGING
+-- Add year column and insert into partitioned table
+ALTER TABLE $STAGING_TABLE ADD COLUMN IF NOT EXISTS data_year VARCHAR(4);
+UPDATE $STAGING_TABLE SET data_year = '$YEAR';
+
 INSERT INTO barangays_partitioned (
     id_0, iso, name_0, id_1, name_1, id_2, name_2, id_3, name_3,
     nl_name_3, varname_3, type_3, engtype_3, province, region, data_year, geom
@@ -120,12 +130,18 @@ INSERT INTO barangays_partitioned (
 SELECT 
     id_0, iso, name_0, id_1, name_1, id_2, name_2, id_3, name_3,
     nl_name_3, varname_3, type_3, engtype_3, province, region, data_year, geom
-FROM $TEMP_TABLE 
-WHERE name_3 IS NOT NULL;
+FROM $STAGING_TABLE 
+WHERE name_3 = '$BARANGAY_NAME';
 
--- Clean up temp table
-DROP TABLE IF EXISTS $TEMP_TABLE;
-EOMOVE
+-- Clean up staging table
+DROP TABLE IF EXISTS $STAGING_TABLE;
+EOSTAGING
+                            echo "✓ Successfully imported barangay: $BARANGAY_NAME"
+                        else
+                            echo "✗ Failed to import barangay: $BARANGAY_NAME"
+                        fi
+                    fi
+                done
             fi
         done
     done
@@ -140,7 +156,8 @@ SELECT
     pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) as size
 FROM pg_tables 
 WHERE tablename LIKE 'barangays_%' 
-ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
+ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC
+LIMIT 20;
 
 -- Show total count by year
 SELECT 
@@ -151,9 +168,16 @@ FROM barangays_partitioned
 GROUP BY data_year 
 ORDER BY data_year;
 
+-- Show sample barangays
+SELECT name_3, data_year, COUNT(*) as count
+FROM barangays_partitioned 
+GROUP BY name_3, data_year
+ORDER BY name_3, data_year
+LIMIT 10;
+
 EOF
 }
 
-echo "Starting partitioned barangay import..."
-import_with_partitioning
+echo "Starting simplified partitioned barangay import..."
+import_with_direct_partitioning
 echo "Partitioned barangay import completed!"
