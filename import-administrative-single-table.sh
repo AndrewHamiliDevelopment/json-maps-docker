@@ -171,8 +171,8 @@ import_admin_level() {
     local search_path="maps/$year/geojson/$subdir"
     local max_depth=1
     
-    # For 2011/2019 Regions, Provinces, Municipalities: use medres/hires if available
-    if [[ ("$year" == "2011" || "$year" == "2019") && ("$admin_level" == "Regions" || "$admin_level" == "Provinces" || "$admin_level" == "Municipalities") ]]; then
+    # For 2011/2019 Provinces and Municipalities: use medres/hires if available
+    if [[ ("$year" == "2011" || "$year" == "2019") && ("$admin_level" == "Provinces" || "$admin_level" == "Municipalities") ]]; then
         if [[ -d "$search_path/medres" ]]; then
             search_path="$search_path/medres"
         elif [[ -d "$search_path/hires" ]]; then
