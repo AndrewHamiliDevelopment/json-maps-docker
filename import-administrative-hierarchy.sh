@@ -168,13 +168,27 @@ import_admin_level() {
     local error_count=0
     local files_found=0
     
+    # For 2023, check if files are in resolution subdirectories
+    local search_path="maps/$year/geojson/$subdir"
+    local max_depth=1
+    
+    if [[ "$year" == "2023" && "$admin_level" != "Municipalities" ]]; then
+        # For 2023, most files are in hires/lowres/medres subdirectories
+        # Let's use medres for consistent quality
+        if [[ -d "$search_path/medres" ]]; then
+            search_path="$search_path/medres"
+        elif [[ -d "$search_path/hires" ]]; then
+            search_path="$search_path/hires"
+        fi
+    fi
+    
     # First, count files to import
     while IFS= read -r -d '' file; do
         ((files_found++))
-    done < <(find "maps/$year/geojson/$subdir" -maxdepth 1 -name "$pattern" -type f -print0 2>/dev/null)
+    done < <(find "$search_path" -maxdepth $max_depth -name "$pattern" -type f -print0 2>/dev/null)
     
     if [[ $files_found -eq 0 ]]; then
-        log "No files found matching pattern: $pattern in maps/$year/geojson/$subdir"
+        log "No files found matching pattern: $pattern in $search_path"
         return 0
     fi
     
@@ -187,7 +201,7 @@ import_admin_level() {
         else
             ((error_count++))
         fi
-    done < <(find "maps/$year/geojson/$subdir" -maxdepth 1 -name "$pattern" -type f -print0 2>/dev/null)
+    done < <(find "$search_path" -maxdepth $max_depth -name "$pattern" -type f -print0 2>/dev/null)
     
     log "$admin_level import summary for $year: $import_count successful, $error_count errors (out of $files_found files)"
     
@@ -309,18 +323,19 @@ main() {
             continue
         fi
         
-        # Import regions
-        import_admin_level "$year" "Regions" "regions-*.json" "regions_$year"
-        
-        # Import provinces (2011 and 2019 have provinces, 2023 has provdists)
-        import_admin_level "$year" "Provinces" "provinces-*.json" "provinces_$year"
-        import_admin_level "$year" "Provincial Districts" "provdists-*.json" "provinces_$year"
-        
-        # Import municipalities
-        import_admin_level "$year" "Municipalities" "municities-*.json" "municipalities_$year"
-        
-        # Import barangays
-        import_admin_level "$year" "Barangays" "barangays-*.json" "barangays_$year"
+        # Import data based on year structure
+        if [[ "$year" == "2023" ]]; then
+            # 2023 has different file patterns and structure
+            import_admin_level "$year" "Regions" "provdists-region-*.json" "regions_$year"
+            import_admin_level "$year" "Provincial Districts" "municities-provdist-*.json" "provinces_$year"
+            import_admin_level "$year" "Municipalities" "bgysubmuns-municity-*.json" "municipalities_$year"
+        else
+            # 2011 and 2019 use consistent patterns
+            import_admin_level "$year" "Regions" "regions.json" "regions_$year"
+            import_admin_level "$year" "Provinces" "provinces-region-*.json" "provinces_$year"
+            import_admin_level "$year" "Municipalities" "municities-province-*.json" "municipalities_$year"
+            import_admin_level "$year" "Barangays" "barangays-municity-*.json" "barangays_$year"
+        fi
         
         # Create summary views for this year
         create_summary_views "$year"
