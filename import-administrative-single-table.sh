@@ -1,8 +1,7 @@
 #!/bin/bash
 
-# Comprehensive Administrative-Level Import Script for Philippines GeoJSON Data
-# This script imports all levels: Regions, Provinces, Municipalities, and Barangays
-# It creates separate tables for each administrative level with proper spatial indexes
+# Single-Table Administrative Import Script for Philippines GeoJSON Data
+# This version creates one table per administrative level with year as a column
 
 set -e
 
@@ -23,12 +22,11 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
 }
 
-# Function to create table with proper structure
-create_table() {
+# Function to create single table for all years
+create_unified_table() {
     local table_name=$1
-    local year=$2
     
-    log "Creating table: ${table_name}"
+    log "Creating unified table: ${table_name}"
     
     psql "$(get_connection_string)" -c "
     DROP TABLE IF EXISTS ${table_name};
@@ -69,20 +67,23 @@ create_table() {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     
-    -- Create indexes
+    -- Partition by year for better performance
+    CREATE TABLE ${table_name}_2011 PARTITION OF ${table_name} FOR VALUES IN (2011);
+    CREATE TABLE ${table_name}_2019 PARTITION OF ${table_name} FOR VALUES IN (2019);
+    CREATE TABLE ${table_name}_2023 PARTITION OF ${table_name} FOR VALUES IN (2023);
+    
+    -- Create indexes on parent table
     CREATE INDEX ${table_name}_geom_idx ON ${table_name} USING GIST (geom);
     CREATE INDEX ${table_name}_year_idx ON ${table_name} (year);
-    CREATE INDEX ${table_name}_name_0_idx ON ${table_name} (name_0);
     CREATE INDEX ${table_name}_name_1_idx ON ${table_name} (name_1);
     CREATE INDEX ${table_name}_name_2_idx ON ${table_name} (name_2);
     CREATE INDEX ${table_name}_name_3_idx ON ${table_name} (name_3);
     CREATE INDEX ${table_name}_region_idx ON ${table_name} (region);
     CREATE INDEX ${table_name}_province_idx ON ${table_name} (province);
     
-    -- Create composite indexes for common queries
-    CREATE INDEX ${table_name}_admin_hierarchy_idx ON ${table_name} (name_0, name_1, name_2, name_3);
+    -- Composite indexes for common queries
     CREATE INDEX ${table_name}_year_region_idx ON ${table_name} (year, region);
-    CREATE INDEX ${table_name}_year_province_idx ON ${table_name} (year, province);
+    CREATE INDEX ${table_name}_year_name_idx ON ${table_name} (year, name_1, name_2, name_3);
     "
 }
 
@@ -161,9 +162,6 @@ import_admin_level() {
         return 0
     fi
     
-    # Create table once for this admin level
-    create_table "$table_name" "$year"
-    
     local import_count=0
     local error_count=0
     local files_found=0
@@ -198,89 +196,95 @@ import_admin_level() {
     fi
 }
 
-# Function to create summary views
-create_summary_views() {
-    local year=$1
-    
-    log "Creating summary views for year $year"
+# Function to create comprehensive views
+create_unified_views() {
+    log "Creating unified analysis views"
     
     psql "$(get_connection_string)" -c "
-    -- Create view for administrative hierarchy summary
-    CREATE OR REPLACE VIEW admin_hierarchy_summary_$year AS
+    -- Time-series analysis view
+    CREATE OR REPLACE VIEW administrative_timeline AS
     SELECT 
-        r.name_1 as region_name,
-        COUNT(DISTINCT p.name_2) as province_count,
-        COUNT(DISTINCT m.name_2) as municipality_count,
-        COUNT(DISTINCT b.name_3) as barangay_count,
-        ST_Union(r.geom) as region_geom
-    FROM regions_$year r
-    LEFT JOIN provinces_$year p ON r.name_1 = p.region
-    LEFT JOIN municipalities_$year m ON r.name_1 = m.region  
-    LEFT JOIN barangays_$year b ON r.name_1 = b.region
-    GROUP BY r.name_1
-    ORDER BY r.name_1;
-    
-    -- Create view for geographic coverage
-    CREATE OR REPLACE VIEW geographic_coverage_$year AS
-    SELECT 
+        year,
         'Regions' as admin_level,
         COUNT(*) as feature_count,
-        ST_Union(geom) as total_area
-    FROM regions_$year
+        ST_Union(geom) as total_geom
+    FROM regions
+    GROUP BY year
     UNION ALL
     SELECT 
+        year,
         'Provinces' as admin_level,
         COUNT(*) as feature_count,
-        ST_Union(geom) as total_area
-    FROM provinces_$year
+        ST_Union(geom) as total_geom
+    FROM provinces
+    GROUP BY year
     UNION ALL
     SELECT 
+        year,
         'Municipalities' as admin_level,
         COUNT(*) as feature_count,
-        ST_Union(geom) as total_area
-    FROM municipalities_$year
+        ST_Union(geom) as total_geom
+    FROM municipalities
+    GROUP BY year
     UNION ALL
     SELECT 
+        year,
         'Barangays' as admin_level,
         COUNT(*) as feature_count,
-        ST_Union(geom) as total_area
-    FROM barangays_$year;
+        ST_Union(geom) as total_geom
+    FROM barangays
+    GROUP BY year
+    ORDER BY admin_level, year;
+    
+    -- Administrative changes over time
+    CREATE OR REPLACE VIEW boundary_evolution AS
+    WITH region_changes AS (
+        SELECT 
+            name_1,
+            year,
+            ST_Area(geom) as area,
+            LAG(ST_Area(geom)) OVER (PARTITION BY name_1 ORDER BY year) as prev_area
+        FROM regions
+        WHERE name_1 IS NOT NULL
+    )
+    SELECT 
+        name_1 as region_name,
+        year,
+        area,
+        prev_area,
+        CASE 
+            WHEN prev_area IS NOT NULL 
+            THEN ((area - prev_area) / prev_area) * 100 
+            ELSE NULL 
+        END as area_change_percent
+    FROM region_changes
+    ORDER BY name_1, year;
+    
+    -- Current vs historical comparison
+    CREATE OR REPLACE VIEW admin_comparison AS
+    SELECT 
+        r2023.name_1 as region_name,
+        COUNT(DISTINCT r2023.id) as regions_2023,
+        COUNT(DISTINCT r2019.id) as regions_2019,
+        COUNT(DISTINCT r2011.id) as regions_2011,
+        COUNT(DISTINCT p2023.id) as provinces_2023,
+        COUNT(DISTINCT p2019.id) as provinces_2019,
+        COUNT(DISTINCT p2011.id) as provinces_2011
+    FROM regions r2023
+    LEFT JOIN regions r2019 ON r2023.name_1 = r2019.name_1 AND r2019.year = 2019
+    LEFT JOIN regions r2011 ON r2023.name_1 = r2011.name_1 AND r2011.year = 2011
+    LEFT JOIN provinces p2023 ON r2023.name_1 = p2023.region AND p2023.year = 2023
+    LEFT JOIN provinces p2019 ON r2023.name_1 = p2019.region AND p2019.year = 2019
+    LEFT JOIN provinces p2011 ON r2023.name_1 = p2011.region AND p2011.year = 2011
+    WHERE r2023.year = 2023
+    GROUP BY r2023.name_1
+    ORDER BY r2023.name_1;
     "
-}
-
-# Function to generate import report
-generate_report() {
-    log "=== IMPORT REPORT ==="
-    
-    for year in 2011 2019 2023; do
-        log "--- Year $year ---"
-        
-        # Check which tables exist and their record counts
-        for table in regions_$year provinces_$year municipalities_$year barangays_$year; do
-            local count=$(psql "$(get_connection_string)" -t -c "
-                SELECT COUNT(*) FROM information_schema.tables 
-                WHERE table_name = '$table';
-            " 2>/dev/null | tr -d ' ')
-            
-            if [[ "$count" == "1" ]]; then
-                local records=$(psql "$(get_connection_string)" -t -c "SELECT COUNT(*) FROM $table;" 2>/dev/null | tr -d ' ')
-                log "$table: $records records"
-            else
-                log "$table: Table not found"
-            fi
-        done
-    done
-    
-    # Show database size
-    local db_size=$(psql "$(get_connection_string)" -t -c "
-        SELECT pg_size_pretty(pg_database_size('$DB_NAME'));
-    " 2>/dev/null | tr -d ' ')
-    log "Total database size: $db_size"
 }
 
 # Main execution function
 main() {
-    log "Starting comprehensive administrative-level import for Philippines GeoJSON data"
+    log "Starting unified administrative import for Philippines GeoJSON data"
     log "Database: $DB_NAME on $DB_HOST:$DB_PORT"
     
     # Check if maps directory exists
@@ -299,6 +303,12 @@ main() {
     log "Ensuring PostGIS extension is enabled"
     psql "$(get_connection_string)" -c "CREATE EXTENSION IF NOT EXISTS postgis;"
     
+    # Create unified tables
+    create_unified_table "regions"
+    create_unified_table "provinces"
+    create_unified_table "municipalities"
+    create_unified_table "barangays"
+    
     # Process each year and administrative level
     for year in 2011 2019 2023; do
         log "Processing year: $year"
@@ -309,101 +319,52 @@ main() {
             continue
         fi
         
-        # Import regions
-        import_admin_level "$year" "Regions" "regions-*.json" "regions_$year"
-        
-        # Import provinces (2011 and 2019 have provinces, 2023 has provdists)
-        import_admin_level "$year" "Provinces" "provinces-*.json" "provinces_$year"
-        import_admin_level "$year" "Provincial Districts" "provdists-*.json" "provinces_$year"
-        
-        # Import municipalities
-        import_admin_level "$year" "Municipalities" "municities-*.json" "municipalities_$year"
-        
-        # Import barangays
-        import_admin_level "$year" "Barangays" "barangays-*.json" "barangays_$year"
-        
-        # Create summary views for this year
-        create_summary_views "$year"
+        # Import all levels into unified tables
+        import_admin_level "$year" "Regions" "regions-*.json" "regions"
+        import_admin_level "$year" "Provinces" "provinces-*.json" "provinces"
+        import_admin_level "$year" "Provincial Districts" "provdists-*.json" "provinces"
+        import_admin_level "$year" "Municipalities" "municities-*.json" "municipalities"
+        import_admin_level "$year" "Barangays" "barangays-*.json" "barangays"
     done
     
-    # Create cross-year comparison views
-    log "Creating cross-year comparison views"
-    psql "$(get_connection_string)" -c "
-    -- Administrative boundary changes over time
-    CREATE OR REPLACE VIEW boundary_changes AS
-    SELECT 
-        'Regions' as admin_level,
-        2011 as year,
-        COUNT(*) as count
-    FROM regions_2011
-    UNION ALL
-    SELECT 
-        'Regions' as admin_level,
-        2019 as year,
-        COUNT(*) as count
-    FROM regions_2019
-    UNION ALL
-    SELECT 
-        'Regions' as admin_level,
-        2023 as year,
-        COUNT(*) as count
-    FROM regions_2023
-    ORDER BY admin_level, year;
-    "
+    # Create unified analysis views
+    create_unified_views
     
-    # Generate final report
-    generate_report
-    
-    log "=== IMPORT COMPLETED ==="
-    log "Tables created with administrative hierarchy data for multiple years"
-    log "You can now query the data using tables: regions_YYYY, provinces_YYYY, municipalities_YYYY, barangays_YYYY"
-    log "Summary views available: admin_hierarchy_summary_YYYY, geographic_coverage_YYYY, boundary_changes"
+    log "=== UNIFIED IMPORT COMPLETED ==="
+    log "Tables created: regions, provinces, municipalities, barangays (partitioned by year)"
+    log "Analysis views: administrative_timeline, boundary_evolution, admin_comparison"
 }
 
 # Help function
 show_help() {
     cat << EOF
-Comprehensive Administrative-Level Import Script for Philippines GeoJSON Data
-
-USAGE:
-    $0 [OPTIONS]
+Unified Administrative Import Script for Philippines GeoJSON Data
 
 DESCRIPTION:
-    This script imports Philippines administrative boundary data (regions, provinces, 
-    municipalities, and barangays) from GeoJSON files into PostgreSQL/PostGIS tables.
-    
-    Data is organized by year (2011, 2019, 2023) and administrative level.
-
-ENVIRONMENT VARIABLES:
-    DB_HOST     PostgreSQL host (default: localhost)
-    DB_PORT     PostgreSQL port (default: 5432)
-    DB_NAME     Database name (default: gis)
-    DB_USER     Database user (default: postgres)
-    DB_PASSWORD Database password (default: password)
+    This script creates unified tables (one per admin level) with year as a column.
+    Uses PostgreSQL partitioning for performance while enabling time-series analysis.
 
 TABLES CREATED:
-    regions_YYYY        - Regional boundaries
-    provinces_YYYY      - Provincial boundaries
-    municipalities_YYYY - Municipal/city boundaries  
-    barangays_YYYY      - Barangay boundaries
+    regions        - All regional boundaries (partitioned by year)
+    provinces      - All provincial boundaries (partitioned by year)
+    municipalities - All municipal boundaries (partitioned by year)
+    barangays      - All barangay boundaries (partitioned by year)
 
 VIEWS CREATED:
-    admin_hierarchy_summary_YYYY - Administrative hierarchy summary
-    geographic_coverage_YYYY     - Geographic coverage statistics
-    boundary_changes             - Changes in boundary counts over time
+    administrative_timeline - Feature counts by year and admin level
+    boundary_evolution     - Area changes over time by region
+    admin_comparison       - Cross-year administrative comparisons
 
-EXAMPLES:
-    # Use default settings
-    $0
-    
-    # Use custom database settings
-    DB_NAME=philippines DB_USER=gis_user $0
+BENEFITS:
+    ✅ Time-series analysis in single queries
+    ✅ PostgreSQL partitioning for performance
+    ✅ Easier cross-year comparisons
+    ✅ Simplified table structure
 
-REQUIREMENTS:
-    - PostgreSQL with PostGIS extension
-    - ogr2ogr (GDAL tools)
-    - psql command-line tool
-    - GeoJSON files in maps/ directory structure
+TRADE-OFFS:
+    ❌ Larger table sizes
+    ❌ More complex queries for single-year analysis
+    ❌ Potential data conflicts between years
 
 EOF
 }
