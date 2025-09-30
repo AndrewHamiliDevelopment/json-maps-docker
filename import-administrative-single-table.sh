@@ -195,12 +195,13 @@ import_admin_level() {
     done < <(find "$search_path" -maxdepth $max_depth -name "$pattern" -type f -print0 2>/dev/null)
     
     if [[ $files_found -eq 0 ]]; then
-        log "No files found matching pattern: $pattern in $search_path"
+        log "No files found matching pattern: $pattern in $search_path for $admin_level ($year)"
+        echo "$year,$admin_level,0,0,0" >> import_summary.log
         return 0
     fi
-    
+
     log "Found $files_found files to import for $admin_level"
-    
+
     # Import all matching files
     while IFS= read -r -d '' file; do
         if import_geojson "$file" "$table_name" "$year" "$admin_level"; then
@@ -209,9 +210,10 @@ import_admin_level() {
             ((error_count++))
         fi
     done < <(find "$search_path" -maxdepth $max_depth -name "$pattern" -type f -print0 2>/dev/null)
-    
+
     log "$admin_level import summary for $year: $import_count successful, $error_count errors (out of $files_found files)"
-    
+    echo "$year,$admin_level,$files_found,$import_count,$error_count" >> import_summary.log
+
     # Update statistics
     if [[ $import_count -gt 0 ]]; then
         log "Updating table statistics for $table_name"
@@ -332,16 +334,19 @@ main() {
     create_unified_table "municipalities"
     create_unified_table "barangays"
     
+    # Remove previous summary log
+    rm -f import_summary.log
+
     # Process each year and administrative level
     for year in 2011 2019 2023; do
         log "Processing year: $year"
-        
+
         # Check if year directory exists
         if [[ ! -d "maps/$year/geojson" ]]; then
             log "WARNING: Directory maps/$year/geojson not found, skipping year $year"
             continue
         fi
-        
+
         # Import all levels into unified tables
         if [[ "$year" == "2023" ]]; then
             # 2023 has different file patterns and structure
@@ -356,10 +361,19 @@ main() {
             import_admin_level "$year" "Barangays" "barangays-municity-*.json" "barangays"
         fi
     done
-    
+
+    # Print import summary
+    log "=== IMPORT SUMMARY ==="
+    if [[ -f import_summary.log ]]; then
+        echo "Year,AdminLevel,FilesFound,Imported,Errors"
+        cat import_summary.log
+    else
+        echo "No import summary log found."
+    fi
+
     # Create unified analysis views
     create_unified_views
-    
+
     log "=== UNIFIED IMPORT COMPLETED ==="
     log "Tables created: regions, provinces, municipalities, barangays (partitioned by year)"
     log "Analysis views: administrative_timeline, boundary_evolution, admin_comparison"
