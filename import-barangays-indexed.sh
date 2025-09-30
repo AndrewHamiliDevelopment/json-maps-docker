@@ -24,16 +24,19 @@ import_all_barangays() {
             if [ -f "$FILE" ]; then
                 echo "Importing $FILE into table $TABLE_NAME"
                 
-                # Import the file first
+                # Import the file first - explicitly specify GeoJSON format
                 ogr2ogr \
                     -f "PostgreSQL" \
                     PG:"host=$PG_HOST port=$PG_PORT dbname=$PG_DB user=$PG_USER password=$PG_PASS" \
+                    -s_srs EPSG:4326 \
+                    -t_srs EPSG:4326 \
                     "$FILE" \
                     -nln "$TABLE_NAME" \
                     -append \
                     -lco GEOMETRY_NAME=geom \
                     -lco FID=gid \
                     -nlt PROMOTE_TO_MULTI \
+                    -skipfailures \
                     -progress
                 
                 # Update the newly imported rows with the year
