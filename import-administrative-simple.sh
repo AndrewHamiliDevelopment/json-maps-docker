@@ -26,7 +26,7 @@ create_table() {
     local table_name=$1
     local geom_type=${2:-MULTIPOLYGON}
     log "Creating table: $table_name"
-    psql -h "$DB_HOST" -U "$DB_USER" -p "$DB_PORT" "$DB_NAME" -c "\
+    PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -p "$DB_PORT" "$DB_NAME" -c "\
     DROP TABLE IF EXISTS $table_name CASCADE;
     CREATE TABLE $table_name (
         id SERIAL PRIMARY KEY,
@@ -75,7 +75,7 @@ import_geojson() {
         return 1
     fi
     log "Importing $(basename "$file_path") to $table_name"
-    ogr2ogr \
+    PGPASSWORD="$DB_PASSWORD" ogr2ogr \
         -f "PostgreSQL" \
         "$(get_connection_string)" \
         "$file_path" \
@@ -100,9 +100,9 @@ main() {
     log "Database: $DB_NAME on $DB_HOST:$DB_PORT"
 
     # Check if database exists, create if missing
-    if ! psql -h "$DB_HOST" -U "$DB_USER" -p "$DB_PORT" -lqt | cut -d \| -f 1 | grep -qw "$DB_NAME"; then
+    if ! PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -p "$DB_PORT" -lqt | cut -d \| -f 1 | grep -qw "$DB_NAME"; then
         log "Database $DB_NAME does not exist. Creating..."
-        createdb -h "$DB_HOST" -U "$DB_USER" -p "$DB_PORT" "$DB_NAME"
+        PGPASSWORD="$DB_PASSWORD" createdb -h "$DB_HOST" -U "$DB_USER" -p "$DB_PORT" "$DB_NAME"
         if [[ $? -ne 0 ]]; then
             log "ERROR: Failed to create database $DB_NAME. Please check your permissions."
             exit 1
@@ -110,14 +110,14 @@ main() {
     fi
 
     # Check database connection
-    if ! psql -h "$DB_HOST" -U "$DB_USER" -p "$DB_PORT" "$DB_NAME" -c "SELECT 1;" >/dev/null 2>&1; then
+    if ! PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -p "$DB_PORT" "$DB_NAME" -c "SELECT 1;" >/dev/null 2>&1; then
         log "ERROR: Cannot connect to database. Please check your connection settings."
         exit 1
     fi
 
     # Enable PostGIS if not already enabled
     log "Ensuring PostGIS extension is enabled"
-    psql -h "$DB_HOST" -U "$DB_USER" -p "$DB_PORT" "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+    PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -p "$DB_PORT" "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS postgis;"
 
     # Create tables for each level
     create_table "regions"
