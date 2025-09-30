@@ -189,27 +189,32 @@ import_admin_level() {
         fi
     fi
     
-    # First, count files to import
+    # Only search for '*.json' files
+    local found_files=()
     while IFS= read -r -d '' file; do
-        ((files_found++))
-    done < <(find "$search_path" -maxdepth $max_depth -name "$pattern" -type f -print0 2>/dev/null)
-    
+        found_files+=("$file")
+    done < <(find "$search_path" -maxdepth $max_depth -name "*.json" -type f -print0 2>/dev/null)
+    files_found=${#found_files[@]}
+
     if [[ $files_found -eq 0 ]]; then
-        log "No files found matching pattern: $pattern in $search_path for $admin_level ($year)"
+        log "ERROR: No files found for $admin_level ($year) in $search_path with pattern: *.json"
         echo "$year,$admin_level,0,0,0" >> import_summary.log
         return 0
     fi
 
-    log "Found $files_found files to import for $admin_level"
+    log "Found $files_found files to import for $admin_level ($year):"
+    for f in "${found_files[@]}"; do
+        echo "  $f"
+    done
 
     # Import all matching files
-    while IFS= read -r -d '' file; do
+    for file in "${found_files[@]}"; do
         if import_geojson "$file" "$table_name" "$year" "$admin_level"; then
             ((import_count++))
         else
             ((error_count++))
         fi
-    done < <(find "$search_path" -maxdepth $max_depth -name "$pattern" -type f -print0 2>/dev/null)
+    done
 
     log "$admin_level import summary for $year: $import_count successful, $error_count errors (out of $files_found files)"
     echo "$year,$admin_level,$files_found,$import_count,$error_count" >> import_summary.log
@@ -355,7 +360,7 @@ main() {
             import_admin_level "$year" "Municipalities" "bgysubmuns-municity-*.json" "municipalities"
         else
             # 2011 and 2019 use consistent patterns, but regions.json is inside medres/
-            import_admin_level "$year" "Regions" "*.json" "regions"
+            import_admin_level "$year" "Regions" "*.json" "regions" # pattern is ignored, now uses all common JSON extensions
             import_admin_level "$year" "Provinces" "provinces-region-*.json" "provinces"
             import_admin_level "$year" "Municipalities" "municities-province-*.json" "municipalities"
             import_admin_level "$year" "Barangays" "barangays-municity-*.json" "barangays"
