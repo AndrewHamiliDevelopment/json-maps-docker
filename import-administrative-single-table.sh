@@ -323,6 +323,16 @@ main() {
         exit 1
     fi
     
+    # Check if database exists, create if missing
+    if ! psql -h "$DB_HOST" -U "$DB_USER" -p "$DB_PORT" -lqt | cut -d \| -f 1 | grep -qw "$DB_NAME"; then
+        log "Database $DB_NAME does not exist. Creating..."
+        createdb -h "$DB_HOST" -U "$DB_USER" -p "$DB_PORT" "$DB_NAME"
+        if [[ $? -ne 0 ]]; then
+            log "ERROR: Failed to create database $DB_NAME. Please check your permissions."
+            exit 1
+        fi
+    fi
+
     # Check database connection
     if ! psql "$(get_connection_string)" -c "SELECT 1;" >/dev/null 2>&1; then
         log "ERROR: Cannot connect to database. Please check your connection settings."
