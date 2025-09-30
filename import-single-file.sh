@@ -1,11 +1,25 @@
 #!/bin/bash
 
-# Universal Administrative Import Script for Philippines GeoJSON Data
-# Imports all .json files from all folders/subfolders under maps/
-# Segregates by admin level (regions, provinces, municipalities, barangays) into separate tables
-# Each table has an 'admin_level' column for easy joins and queries
+# Single File Import Script for Philippines GeoJSON Data
+# Usage: ./import-single-file.sh <path-to-geojson-file>
+# Imports a single GeoJSON file and determines the appropriate table based on the file path
 
 set -e
+
+# Check if file argument is provided
+if [ $# -eq 0 ]; then
+    echo "Usage: $0 <path-to-geojson-file>"
+    echo "Example: $0 maps/2011/geojson/regions/regions-region-1-ilocos.json"
+    exit 1
+fi
+
+FILE_PATH="$1"
+
+# Check if file exists
+if [ ! -f "$FILE_PATH" ]; then
+    echo "ERROR: File '$FILE_PATH' does not exist."
+    exit 1
+fi
 
 DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-5432}"
@@ -13,10 +27,6 @@ DB_NAME="${DB_NAME:-gis}"
 DB_USER="${DB_USER:-postgres}"
 DB_PASSWORD="${DB_PASSWORD:-password}"
 export PGPASSWORD="$DB_PASSWORD"
-
-get_connection_string() {
-    echo "postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
-}
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
@@ -89,7 +99,7 @@ import_geojson() {
 }
 
 main() {
-    log "Starting universal administrative import for Philippines GeoJSON data"
+    log "Starting single file import for: $FILE_PATH"
     log "Database: $DB_NAME on $DB_HOST:$DB_PORT"
 
     # Ensure PGPASSWORD is set before any database command
@@ -105,37 +115,46 @@ main() {
     log "Ensuring PostGIS extension is enabled"
     PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -p "$DB_PORT" "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS postgis;"
 
-    # Create tables for each level
-    create_table "regions"
-    create_table "provinces"
-    create_table "municipalities"
-    create_table "barangays"
+    # Determine admin level and table name by file path
+    case "$FILE_PATH" in
+        */regions/*)
+            TABLE_NAME="regions"
+            ADMIN_LEVEL="region"
+            ;;
+        */provinces/*)
+            TABLE_NAME="provinces"
+            ADMIN_LEVEL="province"
+            ;;
+        */municties/*|*/municities/*)
+            TABLE_NAME="municipalities"
+            ADMIN_LEVEL="municipality"
+            ;;
+        */barangays/*)
+            TABLE_NAME="barangays"
+            ADMIN_LEVEL="barangay"
+            ;;
+        *)
+            log "ERROR: Cannot determine admin level from file path: $FILE_PATH"
+            log "Expected path to contain one of: regions, provinces, municities/municties, barangays"
+            exit 1
+            ;;
+    esac
 
-    # Import all .json files from all subfolders
-    find maps -type f -name "*.json" | while read -r file; do
-        # Determine admin level by path
-        case "$file" in
-            */regions/*)
-                import_geojson "$file" "regions" "region"
-                ;;
-            */provinces/*)
-                import_geojson "$file" "provinces" "province"
-                ;;
-            */municties/*|*/municities/*)
-                import_geojson "$file" "municipalities" "municipality"
-                ;;
-            */barangays/*)
-                import_geojson "$file" "barangays" "barangay"
-                ;;
-            *)
-                log "Skipping (unknown level): $file"
-                ;;
-        esac
-    done
+    # Check if table exists, create if it doesn't
+    if ! PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -U "$DB_USER" -p "$DB_PORT" "$DB_NAME" -c "\dt $TABLE_NAME" >/dev/null 2>&1; then
+        log "Table $TABLE_NAME does not exist. Creating it..."
+        create_table "$TABLE_NAME"
+    else
+        log "Table $TABLE_NAME already exists. Appending data..."
+    fi
 
-    log "=== UNIVERSAL IMPORT COMPLETED ==="
-    log "Tables created: regions, provinces, municipalities, barangays"
-    log "You can join tables using province, region, etc. columns."
+    # Import the file
+    import_geojson "$FILE_PATH" "$TABLE_NAME" "$ADMIN_LEVEL"
+
+    log "=== SINGLE FILE IMPORT COMPLETED ==="
+    log "File: $FILE_PATH"
+    log "Table: $TABLE_NAME"
+    log "Admin Level: $ADMIN_LEVEL"
 }
 
 main "$@"
