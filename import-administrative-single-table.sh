@@ -29,9 +29,9 @@ create_unified_table() {
     log "Creating unified table: ${table_name}"
     
     psql "$(get_connection_string)" -c "
-    DROP TABLE IF EXISTS ${table_name};
+    DROP TABLE IF EXISTS ${table_name} CASCADE;
     CREATE TABLE ${table_name} (
-        id SERIAL PRIMARY KEY,
+        id SERIAL,
         year INTEGER NOT NULL,
         -- Administrative identifiers
         id_0 INTEGER,
@@ -64,10 +64,11 @@ create_unified_table() {
         geom GEOMETRY(MULTIPOLYGON, 4326),
         -- Metadata
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id, year)
+    ) PARTITION BY LIST (year);
     
-    -- Partition by year for better performance
+    -- Create partitions for each year
     CREATE TABLE ${table_name}_2011 PARTITION OF ${table_name} FOR VALUES IN (2011);
     CREATE TABLE ${table_name}_2019 PARTITION OF ${table_name} FOR VALUES IN (2019);
     CREATE TABLE ${table_name}_2023 PARTITION OF ${table_name} FOR VALUES IN (2023);
