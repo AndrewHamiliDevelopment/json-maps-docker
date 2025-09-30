@@ -171,9 +171,17 @@ import_admin_level() {
     local search_path="maps/$year/geojson/$subdir"
     local max_depth=1
     
+    # For 2011/2019 Regions, Provinces, Municipalities: use medres/hires if available
+    if [[ ("$year" == "2011" || "$year" == "2019") && ("$admin_level" == "Regions" || "$admin_level" == "Provinces" || "$admin_level" == "Municipalities") ]]; then
+        if [[ -d "$search_path/medres" ]]; then
+            search_path="$search_path/medres"
+        elif [[ -d "$search_path/hires" ]]; then
+            search_path="$search_path/hires"
+        fi
+    fi
+    
+    # For 2023, most files are in hires/lowres/medres subdirectories
     if [[ "$year" == "2023" && "$admin_level" != "Municipalities" ]]; then
-        # For 2023, most files are in hires/lowres/medres subdirectories
-        # Let's use medres for consistent quality
         if [[ -d "$search_path/medres" ]]; then
             search_path="$search_path/medres"
         elif [[ -d "$search_path/hires" ]]; then
@@ -341,7 +349,7 @@ main() {
             import_admin_level "$year" "Provincial Districts" "municities-provdist-*.json" "provinces"
             import_admin_level "$year" "Municipalities" "bgysubmuns-municity-*.json" "municipalities"
         else
-            # 2011 and 2019 use consistent patterns
+            # 2011 and 2019 use consistent patterns, but regions.json is inside medres/
             import_admin_level "$year" "Regions" "regions.json" "regions"
             import_admin_level "$year" "Provinces" "provinces-region-*.json" "provinces"
             import_admin_level "$year" "Municipalities" "municities-province-*.json" "municipalities"
