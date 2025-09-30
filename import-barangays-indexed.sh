@@ -20,12 +20,11 @@ import_all_barangays() {
     for YEAR in 2011 2019 2023; do
         echo "Processing barangays for year $YEAR..."
         
-        # Add year column to track data source
         find "maps/$YEAR/geojson/barangays" -name "*.json" | while read FILE; do
             if [ -f "$FILE" ]; then
                 echo "Importing $FILE into table $TABLE_NAME"
                 
-                # Add year as additional field and import
+                # Import the file first
                 ogr2ogr \
                     -f "PostgreSQL" \
                     PG:"host=$PG_HOST port=$PG_PORT dbname=$PG_DB user=$PG_USER password=$PG_PASS" \
@@ -35,8 +34,17 @@ import_all_barangays() {
                     -lco GEOMETRY_NAME=geom \
                     -lco FID=gid \
                     -nlt PROMOTE_TO_MULTI \
-                    -sql "SELECT *, '$YEAR' as data_year FROM OGRGeoJSON" \
                     -progress
+                
+                # Update the newly imported rows with the year
+                echo "Adding year information for $YEAR..."
+                psql -h "$PG_HOST" -p "$PG_PORT" -d "$PG_DB" -U "$PG_USER" << EOSQL
+-- Add data_year column if it doesn't exist
+ALTER TABLE $TABLE_NAME ADD COLUMN IF NOT EXISTS data_year VARCHAR(4);
+
+-- Update rows that don't have year set
+UPDATE $TABLE_NAME SET data_year = '$YEAR' WHERE data_year IS NULL;
+EOSQL
             fi
         done
     done
